@@ -1,0 +1,84 @@
+default:
+  image:
+    name: hashicorp/terraform:1.4.4
+    entrypoint: [""]
+  cache:
+    - key: $CI_PIPELINE_ID-terraform-cache
+      paths:
+        - .terraform/
+        - .terraform.lock.hcl
+
+variables:
+  STATEFILE_NAME: "terraform.tfstate-${ENV}-$CI_PROJECT_ID"
+  TF_ADDRESS: "https://gitlab.com/api/v4/projects/${CI_PROJECT_ID}/terraform/state/${STATEFILE_NAME}"
+  TF_USERNAME: "${GITLAB_USERNAME}"
+  TF_PASSWORD: "${GITLAB_TOKEN}"
+  ENV: "UAT"
+
+stages:
+  - pre deploy
+  - plan
+  - deploy
+  - output
+  - destroy
+
+format:
+  stage: pre deploy
+  script:
+    - terraform fmt
+  cache: []
+  allow_failure: true
+
+download_provider:
+  stage: pre deploy
+  script:
+    - chmod +x scripts/script1.sh
+    - ./scripts/script1.sh
+  ##The script initializes Terraform with the specified backend configuration,
+  ## and this calls the script in scripts folder
+
+validate:
+  stage: pre deploy
+  script:
+    - terraform validate
+  allow_failure: true
+  needs:
+    - download_provider
+
+before_script:
+  - export AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+  - export AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+  - apk add --update jq
+
+terraform_plan:
+  stage: plan
+  script:
+    - terraform plan --out=${ENV}-outputs.json --var-file=./env/${ENV}.tfvars | tee "terraformplan_${ENV}${CI_JOB_NAME}${CI_JOB_ID}"
+#    - terraform output -json > output.json
+#    - export VPC_name = $(jq -r '.region.value' output.json)
+#    - echo  $VPC_name
+  artifacts:
+    paths:
+      - "terraformplan_${ENV}${CI_JOB_NAME}${CI_JOB_ID}"
+
+    ## this will store the output of plan in build>>Artifacts with job name and job id
+
+apply_configuration:
+  when: manual
+  stage: deploy
+  script:
+    - terraform apply -auto-approve -var-file=./env/${ENV}.tfvars
+
+terraform_destroy:
+  stage: destroy
+  when: manual
+  script:
+    - terraform destroy -auto-approve -var-file=./env/${ENV}.tfvars
+  #only:
+  #  merge_requests
+terraform_output:
+  stage: output
+  script:
+    - terraform output -json > output.json
+    - export VPC_ID=$(jq -r '.vpc_id.value' output.json)
+    - echo $VPC_ID
